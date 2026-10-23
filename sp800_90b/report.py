@@ -1,6 +1,6 @@
 """
 NIST SP 800-90B ビビッド＆クール (Cyberpunk/Dark Neon) HTML ダッシュボード
-- 日本語 / English のワンクリック表示切り替え (i18n)
+- 日本語 / English のワンクリック表示切り替え (i18n, 完全対応版)
 - ネオンサイバーパンク/ダークモードのビビッドなビジュアル
 - Chart.js による動的チャート (Shannon/Rényi比較, SP 800-90B推定器比較, スライディングウィンドウ推移, ヒストグラム)
 """
@@ -28,7 +28,7 @@ def generate_html_report(data: Dict[str, Any], title: str = "NIST SP 800-90B Ent
     timeseries = data.get("timeseries_data", {})
     iid_test = data.get("iid_test_result")
 
-    # 推定器定義
+    # 推定器定義 (キー, 日本語名, 英語名)
     estimator_keys = [
         ("mcv", "6.3.1 最頻値 (MCV)", "6.3.1 Most Common Value (MCV)"),
         ("collision", "6.3.2 衝突 (Collision)", "6.3.2 Collision Estimate"),
@@ -62,7 +62,7 @@ def generate_html_report(data: Dict[str, Any], title: str = "NIST SP 800-90B Ent
             sp_chart_values.append(round(val, 4))
             is_min = abs(val - min_val) < 1e-5 and "拡張" not in name_ja
             if is_min:
-                sp_chart_bg.append("rgba(255, 0, 85, 0.85)")       # ビビッドネオンピンク/レッド
+                sp_chart_bg.append("rgba(255, 0, 85, 0.85)")       # ビビッドネオンピンク
                 sp_chart_border.append("#ff0055")
             elif "拡張" in name_ja:
                 sp_chart_bg.append("rgba(168, 85, 247, 0.8)")      # ネオンパープル
@@ -157,7 +157,7 @@ def generate_html_report(data: Dict[str, Any], title: str = "NIST SP 800-90B Ent
         }}
         .container {{ max-width: 1140px; margin: 0 auto; }}
 
-        /* 多言語切り替え */
+        /* 多言語切り替えルール */
         body.lang-mode-ja .lang-en {{ display: none !important; }}
         body.lang-mode-en .lang-ja {{ display: none !important; }}
 
@@ -427,7 +427,10 @@ def generate_html_report(data: Dict[str, Any], title: str = "NIST SP 800-90B Ent
                 <div class="gauge-container">
                     <div class="gauge-bar" style="width: {min(100.0, entropy_rate):.1f}%;"></div>
                 </div>
-                <div class="kpi-sub">{max_entropy_possible:.1f} bits 中 {h_final:.2f} bits</div>
+                <div class="kpi-sub">
+                    <span class="lang-ja">{max_entropy_possible:.1f} bits 中 {h_final:.2f} bits</span>
+                    <span class="lang-en">{h_final:.2f} bits of {max_entropy_possible:.1f} bits</span>
+                </div>
             </div>
         </div>
 
@@ -532,7 +535,13 @@ def generate_html_report(data: Dict[str, Any], title: str = "NIST SP 800-90B Ent
             <div class="grid-2">
                 <div class="subcard">
                     <div class="subcard-title">4.4.1 Repetition Count Test (RCT)</div>
-                    <div class="subcard-val" style="color: var(--neon-pink);">C = {health.get('rct_cutoff', '-')} <span class="unit">回 / reps</span></div>
+                    <div class="subcard-val" style="color: var(--neon-pink);">
+                        C = {health.get('rct_cutoff', '-')} 
+                        <span class="unit">
+                            <span class="lang-ja">回</span>
+                            <span class="lang-en">reps</span>
+                        </span>
+                    </div>
                     <div class="subcard-desc">
                         <span class="lang-ja">ノイズ源のスタック（固着）故障を即座に検出。同一値が連続 C 回現れたら異常。</span>
                         <span class="lang-en">Detects catastrophic stuck faults immediately. Signals failure on C consecutive identical samples.</span>
@@ -635,10 +644,11 @@ def generate_html_report(data: Dict[str, Any], title: str = "NIST SP 800-90B Ent
         }}
 
         // 3. 時系列推移
+        let tsChart = null;
         {f'''
         const tsCtx = document.getElementById('tsChart');
         if (tsCtx && window.Chart) {{
-            new Chart(tsCtx, {{
+            tsChart = new Chart(tsCtx, {{
                 type: 'line',
                 data: {{
                     labels: {json.dumps(ts_labels)},
@@ -678,10 +688,11 @@ def generate_html_report(data: Dict[str, Any], title: str = "NIST SP 800-90B Ent
         ''' if has_ts else ""}
 
         // 4. ヒストグラム
+        let histChart = null;
         {f'''
         const histCtx = document.getElementById('histChart');
         if (histCtx && window.Chart) {{
-            new Chart(histCtx, {{
+            histChart = new Chart(histCtx, {{
                 type: 'line',
                 data: {{
                     labels: {json.dumps(hist_labels)},
@@ -716,6 +727,10 @@ def generate_html_report(data: Dict[str, Any], title: str = "NIST SP 800-90B Ent
                     ? {json.dumps(sp_chart_labels_ja, ensure_ascii=False)}
                     : {json.dumps(sp_chart_labels_en, ensure_ascii=False)};
                 spChart.update();
+            }}
+            if (histChart) {{
+                histChart.data.datasets[0].label = currentLang === 'ja' ? '出現頻度' : 'Frequency';
+                histChart.update();
             }}
         }}
     </script>
