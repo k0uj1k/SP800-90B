@@ -10,10 +10,20 @@ import numpy as np
 
 from sp800_90b.dataset import Dataset
 from sp800_90b.estimators import assess_non_iid_entropy
+from sp800_90b.estimators.extended import compute_extended_entropies
+from sp800_90b.estimators.timeseries import analyze_sliding_window_entropy
 from sp800_90b.health import calc_rct_cutoff, calc_apt_cutoff, HealthTester
 from sp800_90b.validation import run_restart_tests, compute_output_entropy
 from sp800_90b.generator import generate_uniform_data, generate_biased_data, generate_markov_data, generate_restart_matrix
 from sp800_90b.report import generate_html_report
+from sp800_90b.iid.permutation import run_permutation_tests
+from sp800_90b.iid.chi_square import (
+    test_independence_non_binary,
+    test_goodness_of_fit_non_binary,
+    test_independence_binary,
+    test_goodness_of_fit_binary,
+    test_lrs_iid,
+)
 
 
 def run_assessment(args):
@@ -30,15 +40,60 @@ def run_assessment(args):
     print(f"[*] 1シンボルあたりのビット長 n: {dataset.bits_per_symbol}")
     print(f"[*] アルファベットサイズ k: {dataset.k}")
 
-    # Non-IID トラックによるエントロピー評価
+    # IID仮説検定 (Option または Auto)
+    iid_testing_result = None
+    iid_verified = False
+    if args.track in ["iid", "auto"]:
+        print("\n[*] Section 5 IID仮説検定 (Permutation & Chi-Square) を実行中...")
+        is_binary = (dataset.k == 2)
+        # カイ二乗検定
+        if is_binary:
+            indep_res = test_independence_binary(dataset.raw_data)
+            gof_res = test_goodness_of_fit_binary(dataset.raw_data)
+        else:
+            indep_res = test_independence_non_binary(dataset.raw_data, k=dataset.k)
+            gof_res = test_goodness_of_fit_non_binary(dataset.raw_data, k=dataset.k)
+
+        lrs_pass = test_lrs_iid(dataset.raw_data)
+        chi_passed = indep_res.passed and gof_res.passed and lrs_pass
+
+        # 並べ替え検定 (10,000回シャッフル)
+        num_perms = 1000 if args.fast else 10000
+        perm_res = run_permutation_tests(dataset.raw_data, is_binary=is_binary, num_permutations=num_perms)
+        iid_verified = chi_passed and perm_res.passed
+
+        iid_testing_result = {
+            "verified": iid_verified,
+            "permutation_passed": perm_res.passed,
+            "failed_permutation_tests": perm_res.failed_test_indices,
+            "independence_passed": indep_res.passed,
+            "goodness_of_fit_passed": gof_res.passed,
+            "lrs_passed": lrs_pass,
+        }
+        print(f"  - IID仮説判定結果: {'合格 (IID承認)' if iid_verified else '不合格 (Non-IIDへフォールバック)'}")
+
+    # Section 6 エントロピー推定器
     print("\n[*] Section 6 エントロピー推定器を実行中...")
     result_orig = assess_non_iid_entropy(dataset.raw_data, k=dataset.k)
 
-    h_original = result_orig.min_entropy
-    print("\n--- [エントロピー推定結果 (H_original)] ---")
-    for k, v in result_orig.to_dict().items():
+    h_original = result_orig.mcv if (args.track == "iid" or (args.track == "auto" and iid_verified)) else result_orig.min_entropy
+    print(f"\n--- [SP 800-90B エントロピー推定結果 (H_original)] ---")
+    for k_name, v in result_orig.to_dict().items():
         if v is not None:
-            print(f"  - {k:<15}: {v:.4f} bits/sample")
+            print(f"  - {k_name:<18}: {v:.4f} bits/sample")
+
+    # 案1 & 案2: 拡張情報理論エントロピーの計算
+    print("\n[*] 案1/案2 拡張エントロピー指標 (Shannon / Renyi / Collision) を計算中...")
+    extended_metrics = compute_extended_entropies(dataset.raw_data, bits_per_symbol=dataset.bits_per_symbol)
+    print(f"  - シャノンエントロピー (H_1) : {extended_metrics['shannon']:.4f} bits/sample")
+    print(f"  - 衝突エントロピー (H_2)     : {extended_metrics['collision_h2']:.4f} bits/sample")
+    print(f"  - レニーエントロピー (H_0.5) : {extended_metrics['renyi_alpha_0_5']:.4f} bits/sample")
+    print(f"  - レニーエントロピー (H_3.0) : {extended_metrics['renyi_alpha_3_0']:.4f} bits/sample")
+    print(f"  - エントロピー効率 (Ratio)   : {extended_metrics['efficiency']:.2%}")
+
+    # 案4: 時系列・スライディングウィンドウ分析
+    print("\n[*] 案4 スライディングウィンドウによるエントロピー推移を分析中...")
+    timeseries_data = analyze_sliding_window_entropy(dataset.raw_data, num_windows=min(30, max(5, dataset.length // 1000)))
 
     # 非バイナリの場合はビット列に対する評価も実施 (Section 3.1.3)
     h_bitstring_scaled = None
@@ -107,12 +162,16 @@ def run_assessment(args):
         "samples": dataset.length,
         "bits_per_symbol": dataset.bits_per_symbol,
         "alphabet_size": dataset.k,
+        "track_used": "IID" if (args.track == "iid" or (args.track == "auto" and iid_verified)) else "Non-IID",
+        "iid_test_result": iid_testing_result,
         "h_original": h_original,
         "h_bitstring_scaled": h_bitstring_scaled,
         "h_initial": h_i,
         "h_final": h_final,
         "histogram_labels": hist_labels,
         "histogram_counts": hist_counts,
+        "extended_metrics": extended_metrics,
+        "timeseries_data": timeseries_data,
         "health_test_cutoffs": {
             "rct_cutoff": rct_c,
             "apt_window": apt_w,
@@ -143,6 +202,8 @@ def main():
     p_est = subparsers.add_parser("estimate", help="乱数データのエントロピー推定と検定を実行")
     p_est.add_argument("--file", "-f", type=str, help="入力データファイルパス (未指定時は合成データを使用)")
     p_est.add_argument("--bits", "-b", type=int, default=8, help="1シンボルあたりのビット長 (1〜8, デフォルト: 8)")
+    p_est.add_argument("--track", type=str, choices=["non-iid", "iid", "auto"], default="non-iid", help="評価トラック (non-iid, iid, auto)")
+    p_est.add_argument("--fast", action="store_true", help="高速検証モード (並べ替え検定の回数を短縮)")
     p_est.add_argument("--samples", "-s", type=int, default=100_000, help="合成データ時のサンプル数 (デフォルト: 100,000)")
     p_est.add_argument("--h-submitter", type=float, help="申告最小エントロピー H_submitter")
     p_est.add_argument("--restart-file", type=str, help="1000x1000 リスタートデータファイル")

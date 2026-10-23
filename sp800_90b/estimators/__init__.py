@@ -17,6 +17,11 @@ from sp800_90b.estimators.multi_mcw import estimate_multi_mcw
 from sp800_90b.estimators.lag import estimate_lag
 from sp800_90b.estimators.multi_mmc import estimate_multi_mmc
 from sp800_90b.estimators.lz78y import estimate_lz78y
+from sp800_90b.estimators.symbol_extended import (
+    estimate_symbol_collision,
+    estimate_symbol_markov,
+    estimate_symbol_compression,
+)
 
 
 @dataclass
@@ -35,6 +40,10 @@ class EntropyAssessmentResult:
     multi_mmc: Optional[float] = None
     lz78y: Optional[float] = None
     min_entropy: float = 0.0
+    # 非バイナリ用拡張推定器
+    symbol_collision: Optional[float] = None
+    symbol_markov: Optional[float] = None
+    symbol_compression: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Optional[float]]:
         return {
@@ -48,6 +57,9 @@ class EntropyAssessmentResult:
             "lag": self.lag,
             "multi_mmc": self.multi_mmc,
             "lz78y": self.lz78y,
+            "symbol_collision": self.symbol_collision,
+            "symbol_markov": self.symbol_markov,
+            "symbol_compression": self.symbol_compression,
             "min_entropy": self.min_entropy,
         }
 
@@ -56,7 +68,7 @@ def assess_non_iid_entropy(data: np.ndarray, k: int) -> EntropyAssessmentResult:
     """
     規格書 Section 6.2: Non-IID トラックの全推定器を実行し最小値を求める。
     バイナリ（k=2）の場合は10種全てを実行。
-    非バイナリ（k>2）の場合はバイナリ専用の Collision, Markov, Compression を除外した7種を実行。
+    非バイナリ（k>2）の場合はバイナリ専用を除外した7種に加え、拡張シンボル推定器も計算。
     """
     is_binary = (k == 2)
     estimates = {}
@@ -67,21 +79,30 @@ def assess_non_iid_entropy(data: np.ndarray, k: int) -> EntropyAssessmentResult:
 
     # 2. Collision (バイナリ専用)
     h_col = None
+    h_sym_col = None
     if is_binary:
         h_col = estimate_collision(data)
         estimates["collision"] = h_col
+    else:
+        h_sym_col = estimate_symbol_collision(data, k=k)
 
     # 3. Markov (バイナリ専用)
     h_markov = None
+    h_sym_markov = None
     if is_binary:
         h_markov = estimate_markov(data)
         estimates["markov"] = h_markov
+    else:
+        h_sym_markov = estimate_symbol_markov(data, k=k)
 
     # 4. Compression (バイナリ専用)
     h_comp = None
+    h_sym_comp = None
     if is_binary:
         h_comp = estimate_compression(data)
         estimates["compression"] = h_comp
+    else:
+        h_sym_comp = estimate_symbol_compression(data, k=k)
 
     # 5. t-Tuple
     h_tuple = estimate_t_tuple(data)
@@ -107,7 +128,7 @@ def assess_non_iid_entropy(data: np.ndarray, k: int) -> EntropyAssessmentResult:
     h_lz = estimate_lz78y(data, k=k)
     estimates["lz78y"] = h_lz
 
-    # 有効な推定値の最小値を取得
+    # 有効な規格値の最小値を取得 (SP 800-90B 準拠)
     valid_values = [v for v in estimates.values() if v is not None and not math.isnan(v)]
     min_h = min(valid_values) if valid_values else 0.0
 
@@ -125,4 +146,7 @@ def assess_non_iid_entropy(data: np.ndarray, k: int) -> EntropyAssessmentResult:
         multi_mmc=h_mmc,
         lz78y=h_lz,
         min_entropy=min_h,
+        symbol_collision=h_sym_col,
+        symbol_markov=h_sym_markov,
+        symbol_compression=h_sym_comp,
     )
